@@ -32,7 +32,7 @@ import type {
   ChannelId,
   ChannelPlugin,
 } from "../channels/plugins/types.public.js";
-import { loadConfig } from "../config/config.js";
+import { getRuntimeConfig } from "../config/config.js";
 import {
   canonicalizeMainSessionAlias,
   resolveAgentMainSessionKey,
@@ -732,7 +732,7 @@ export async function runHeartbeatOnce(opts: {
   reason?: string;
   deps?: HeartbeatDeps;
 }): Promise<HeartbeatRunResult> {
-  const cfg = opts.cfg ?? loadConfig();
+  const cfg = opts.cfg ?? getRuntimeConfig();
   const explicitAgentId = typeof opts.agentId === "string" ? opts.agentId.trim() : "";
   const forcedSessionAgentId =
     explicitAgentId.length > 0 ? undefined : parseAgentSessionKey(opts.sessionKey)?.agentId;
@@ -938,28 +938,28 @@ export async function runHeartbeatOnce(opts: {
       return;
     }
 
-    const store = loadSessionStore(storePath);
-    const current = store[sessionKey];
-    // Initialize stub entry on first run when current doesn't exist
-    const base = current ?? {
-      // Generate valid sessionId - derive from sessionKey without colons
-      sessionId: sessionKey.replace(/:/g, "_"),
-      updatedAt: startedAt,
-      createdAt: startedAt,
-      messageCount: 0,
-      lastMessageAt: startedAt,
-      heartbeatTaskState: {},
-    };
-    const taskState = { ...base.heartbeatTaskState };
+    await updateSessionStore(storePath, (store) => {
+      const current = store[sessionKey];
+      // Initialize stub entry on first run when current doesn't exist
+      const base = current ?? {
+        // Generate valid sessionId - derive from sessionKey without colons
+        sessionId: sessionKey.replace(/:/g, "_"),
+        updatedAt: startedAt,
+        createdAt: startedAt,
+        messageCount: 0,
+        lastMessageAt: startedAt,
+        heartbeatTaskState: {},
+      };
+      const taskState = { ...base.heartbeatTaskState };
 
-    for (const task of preflight.tasks) {
-      if (isTaskDue(taskState[task.name], task.interval, startedAt)) {
-        taskState[task.name] = startedAt;
+      for (const task of preflight.tasks!) {
+        if (isTaskDue(taskState[task.name], task.interval, startedAt)) {
+          taskState[task.name] = startedAt;
+        }
       }
-    }
 
-    store[sessionKey] = { ...base, heartbeatTaskState: taskState };
-    await saveSessionStore(storePath, store);
+      store[sessionKey] = { ...base, heartbeatTaskState: taskState };
+    });
   };
 
   const consumeInspectedSystemEvents = () => {
@@ -1271,16 +1271,16 @@ export async function runHeartbeatOnce(opts: {
 
     // Record last delivered heartbeat payload for dedupe.
     if (!shouldSkipMain && normalized.text.trim()) {
-      const store = loadSessionStore(storePath);
-      const current = store[sessionKey];
-      if (current) {
-        store[sessionKey] = {
-          ...current,
-          lastHeartbeatText: normalized.text,
-          lastHeartbeatSentAt: startedAt,
-        };
-        await saveSessionStore(storePath, store);
-      }
+      await updateSessionStore(storePath, (store) => {
+        const current = store[sessionKey];
+        if (current) {
+          store[sessionKey] = {
+            ...current,
+            lastHeartbeatText: normalized.text,
+            lastHeartbeatSentAt: startedAt,
+          };
+        }
+      });
     }
 
     emitHeartbeatEvent({
@@ -1323,7 +1323,7 @@ export function startHeartbeatRunner(opts: {
   const runtime = opts.runtime ?? defaultRuntime;
   const runOnce = opts.runOnce ?? runHeartbeatOnce;
   const state = {
-    cfg: opts.cfg ?? loadConfig(),
+    cfg: opts.cfg ?? getRuntimeConfig(),
     runtime,
     schedulerSeed: resolveHeartbeatSchedulerSeed(opts.stableSchedulerSeed),
     agents: new Map<string, HeartbeatAgentState>(),
