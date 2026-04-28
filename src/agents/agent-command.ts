@@ -60,6 +60,7 @@ import {
   resolveDefaultModelForAgent,
   resolveThinkingDefault,
 } from "./model-selection.js";
+import { classifyEmbeddedPiRunResultForModelFallback } from "./pi-embedded-runner/result-fallback-classifier.js";
 import { resolveProviderIdForAuth } from "./provider-auth-aliases.js";
 import { normalizeSpawnedRunMetadata } from "./spawned-context.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
@@ -67,6 +68,7 @@ import { ensureAgentWorkspace } from "./workspace.js";
 
 const log = createSubsystemLogger("agents/agent-command");
 type AttemptExecutionRuntime = typeof import("./command/attempt-execution.runtime.js");
+type AgentAttemptResult = Awaited<ReturnType<AttemptExecutionRuntime["runAgentAttempt"]>>;
 type AcpManagerRuntime = typeof import("../acp/control-plane/manager.js");
 type AcpPolicyRuntime = typeof import("../acp/policy.js");
 type AcpRuntimeErrorsRuntime = typeof import("../acp/runtime/errors.js");
@@ -471,11 +473,17 @@ async function agentCommandInternal(
       const visibleTextAccumulator = attemptExecutionRuntime.createAcpVisibleTextAccumulator();
       let stopReason: string | undefined;
       try {
-        const { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } =
-          await loadAcpPolicyRuntime();
-        const dispatchPolicyError = resolveAcpDispatchPolicyError(cfg);
-        if (dispatchPolicyError) {
-          throw dispatchPolicyError;
+        const {
+          resolveAcpAgentPolicyError,
+          resolveAcpDispatchPolicyError,
+          resolveAcpExplicitTurnPolicyError,
+        } = await loadAcpPolicyRuntime();
+        const turnPolicyError =
+          opts.acpTurnSource === "manual_spawn"
+            ? resolveAcpExplicitTurnPolicyError(cfg)
+            : resolveAcpDispatchPolicyError(cfg);
+        if (turnPolicyError) {
+          throw turnPolicyError;
         }
         const acpAgent = normalizeAgentId(
           acpResolution.meta.agent || resolveAgentIdFromSessionKey(sessionKey),
@@ -690,6 +698,9 @@ async function agentCommandInternal(
     const hasStoredOverride = Boolean(
       sessionEntry?.modelOverride || sessionEntry?.providerOverride,
     );
+    let storedModelOverrideSource = hasStoredOverride
+      ? sessionEntry?.modelOverrideSource
+      : undefined;
     const explicitProviderOverride =
       typeof opts.provider === "string"
         ? normalizeExplicitOverrideInput(opts.provider, "provider")
@@ -893,7 +904,7 @@ async function agentCommandInternal(
       opts.replyChannel ?? opts.channel,
     );
 
-    let result: Awaited<ReturnType<AttemptExecutionRuntime["runAgentAttempt"]>>;
+    let result: AgentAttemptResult;
     let fallbackProvider = provider;
     let fallbackModel = model;
     const MAX_LIVE_SWITCH_RETRIES = 5;
@@ -904,17 +915,26 @@ async function agentCommandInternal(
         const effectiveFallbacksOverride = resolveEffectiveModelFallbacks({
           cfg,
           agentId: sessionAgentId,
-          hasSessionModelOverride: Boolean(storedModelOverride),
+          hasSessionModelOverride:
+            hasExplicitRunOverride || Boolean(storedProviderOverride || storedModelOverride),
+          modelOverrideSource: hasExplicitRunOverride ? "user" : storedModelOverrideSource,
         });
 
         let fallbackAttemptIndex = 0;
-        const fallbackResult = await runWithModelFallback({
+        let toolCallCount = 0;
+        const fallbackResult = await runWithModelFallback<AgentAttemptResult>({
           cfg,
           provider,
           model,
           runId,
           agentDir,
           fallbacksOverride: effectiveFallbacksOverride,
+          classifyResult: ({ provider, model, result }) =>
+            classifyEmbeddedPiRunResultForModelFallback({
+              provider,
+              model,
+              result,
+            }),
           run: async (providerOverride, modelOverride, runOptions) => {
             const isFallbackRetry = fallbackAttemptIndex > 0;
             fallbackAttemptIndex += 1;
@@ -954,6 +974,9 @@ async function agentCommandInternal(
                     data: evt.data ?? {},
                   });
                 }
+                if (evt.stream === "tool" && evt.data?.phase === "start") {
+                  toolCallCount += 1;
+                }
                 if (
                   evt.stream === "lifecycle" &&
                   typeof evt.data?.phase === "string" &&
@@ -973,6 +996,18 @@ async function agentCommandInternal(
           if (stopReason && stopReason !== "end_turn") {
             console.error(`[agent] run ${runId} ended with stopReason=${stopReason}`);
           }
+          const agentMeta = result.meta.agentMeta;
+          const rawUsage = agentMeta?.usage;
+          const lifecycleUsage =
+            rawUsage !== undefined
+              ? {
+                  inputTokens: rawUsage.input ?? 0,
+                  outputTokens: rawUsage.output ?? 0,
+                  ...(rawUsage.cacheRead !== undefined && {
+                    cacheReadTokens: rawUsage.cacheRead,
+                  }),
+                }
+              : undefined;
           emitAgentEvent({
             runId,
             stream: "lifecycle",
@@ -982,6 +1017,9 @@ async function agentCommandInternal(
               endedAt: Date.now(),
               aborted: result.meta.aborted ?? false,
               stopReason,
+              ...(agentMeta?.model !== undefined && { model: agentMeta.model }),
+              ...(lifecycleUsage !== undefined && { usage: lifecycleUsage }),
+              ...(toolCallCount > 0 && { toolCallCount }),
             },
           });
         }
@@ -1055,6 +1093,7 @@ async function agentCommandInternal(
             err.provider !== previousProvider
           ) {
             storedModelOverride = err.model;
+            storedModelOverrideSource = "user";
           }
           lifecycleEnded = false;
           log.info(
