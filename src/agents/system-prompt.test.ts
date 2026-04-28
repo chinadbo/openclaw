@@ -136,6 +136,17 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("Subagent details");
   });
 
+  it("can omit generic silent-reply guidance for channel-aware prompts", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      extraSystemPrompt: 'If no response is needed, reply with exactly "NO_REPLY".',
+      silentReplyPromptMode: "none",
+    });
+
+    expect(prompt).not.toContain("## Silent Replies");
+    expect(prompt).toContain('reply with exactly "NO_REPLY"');
+  });
+
   it("includes skills in minimal prompt mode when skillsPrompt is provided (cron regression)", () => {
     // Isolated cron sessions use promptMode="minimal" but must still receive skills.
     const skillsPrompt =
@@ -335,7 +346,10 @@ describe("buildAgentSystemPrompt", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
       toolNames: ["sessions_spawn", "subagents", "agents_list", "exec"],
-      nativeCommandNames: ["codex"],
+      nativeCommandGuidanceLines: [
+        "Native Codex app-server plugin is available (`/codex ...`). For Codex bind/control/thread/resume/steer/stop requests, prefer `/codex bind`, `/codex threads`, `/codex resume`, `/codex steer`, and `/codex stop` over ACP.",
+        "Use ACP for Codex only when the user explicitly asks for ACP/acpx or wants to test the ACP path.",
+      ],
       acpEnabled: true,
     });
 
@@ -1038,7 +1052,9 @@ describe("buildSubagentSystemPrompt", () => {
       task: "research task",
       childDepth: 1,
       maxSpawnDepth: 2,
-      nativeCommandNames: ["codex"],
+      nativeCommandGuidanceLines: [
+        "Native Codex app-server plugin is available (`/codex ...`). Prefer that path for Codex bind/control/thread/resume/steer/stop requests; use Codex ACP only when explicitly requested.",
+      ],
       acpEnabled: true,
     });
 
