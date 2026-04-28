@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { PluginJsonValueSchema } from "./plugins.js";
 import { NonEmptyString, SessionLabelString } from "./primitives.js";
 
 export const SessionCompactionCheckpointReasonSchema = Type.Union([
@@ -172,6 +173,26 @@ export const SessionsPatchParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const SessionsPluginPatchParamsSchema = Type.Object(
+  {
+    key: NonEmptyString,
+    pluginId: NonEmptyString,
+    namespace: NonEmptyString,
+    value: Type.Optional(PluginJsonValueSchema),
+    unset: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+);
+
+export const SessionsPluginPatchResultSchema = Type.Object(
+  {
+    ok: Type.Literal(true),
+    key: NonEmptyString,
+    value: Type.Optional(PluginJsonValueSchema),
+  },
+  { additionalProperties: false },
+);
+
 export const SessionsResetParamsSchema = Type.Object(
   {
     key: NonEmptyString,
@@ -303,3 +324,45 @@ export const SessionsUsageParamsSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
+export const SessionsCreateSharedTokenParamsSchema = Type.Object(
+  {
+    sessionKey: NonEmptyString,
+    /** TTL in milliseconds. Defaults to 24 hours; max 7 days. */
+    ttlMs: Type.Optional(Type.Integer({ minimum: 1 })),
+  },
+  { additionalProperties: false },
+);
+
+export type SessionsCreateSharedTokenParams = {
+  sessionKey: string;
+  ttlMs?: number;
+};
+
+export const SessionsCreateSharedTokenResultSchema = Type.Object(
+  {
+    ok: Type.Literal(true),
+    token: NonEmptyString,
+    sessionKey: NonEmptyString,
+    expiresAtMs: Type.Integer({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+export type SessionsCreateSharedTokenResult = {
+  ok: true;
+  token: string;
+  sessionKey: string;
+  expiresAtMs: number;
+};
+
+export const SessionsRevokeSharedTokenParamsSchema = Type.Object(
+  {
+    token: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+export type SessionsRevokeSharedTokenParams = {
+  token: string;
+};
