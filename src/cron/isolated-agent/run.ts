@@ -6,6 +6,7 @@ import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { CliDeps } from "../../cli/outbound-send-deps.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import { resolveCronDeliveryPlan, type CronDeliveryPlan } from "../delivery-plan.js";
 import type {
@@ -75,6 +76,9 @@ let cronModelCatalogRuntimePromise:
   | Promise<typeof import("./run-model-catalog.runtime.js")>
   | undefined;
 let cronDeliveryRuntimePromise: Promise<typeof import("./run-delivery.runtime.js")> | undefined;
+let cronModelPreflightRuntimePromise:
+  | Promise<typeof import("./model-preflight.runtime.js")>
+  | undefined;
 
 async function loadSessionStoreRuntime() {
   sessionStoreRuntimePromise ??= import("../../config/sessions/store.runtime.js");
@@ -109,6 +113,11 @@ async function loadCronModelCatalogRuntime() {
 async function loadCronDeliveryRuntime() {
   cronDeliveryRuntimePromise ??= import("./run-delivery.runtime.js");
   return await cronDeliveryRuntimePromise;
+}
+
+async function loadCronModelPreflightRuntime() {
+  cronModelPreflightRuntimePromise ??= import("./model-preflight.runtime.js");
+  return await cronModelPreflightRuntimePromise;
 }
 
 function hasConfiguredAuthProfiles(cfg: OpenClawConfig): boolean {
@@ -278,6 +287,7 @@ function resolveMessagingToolSentTargets(params: {
   if (!params.resolvedDelivery.ok) {
     return [];
   }
+  const threadId = stringifyRouteThreadId(params.resolvedDelivery.threadId);
   return [
     {
       tool: "message",
@@ -286,9 +296,7 @@ function resolveMessagingToolSentTargets(params: {
         ? { accountId: params.resolvedDelivery.accountId }
         : {}),
       ...(params.resolvedDelivery.to ? { to: params.resolvedDelivery.to } : {}),
-      ...(params.resolvedDelivery.threadId
-        ? { threadId: String(params.resolvedDelivery.threadId) }
-        : {}),
+      ...(threadId ? { threadId } : {}),
     },
   ];
 }
@@ -571,6 +579,26 @@ async function prepareCronRunContext(params: {
     logWarn(resolvedModelSelection.warning);
   }
 
+  const preflight = await (
+    await loadCronModelPreflightRuntime()
+  ).preflightCronModelProvider({
+    cfg: cfgWithAgentDefaults,
+    provider,
+    model,
+  });
+  if (preflight.status === "unavailable") {
+    logWarn(`[cron:${input.job.id}] ${preflight.reason}`);
+    return {
+      ok: false,
+      result: withRunSession({
+        status: "skipped",
+        error: preflight.reason,
+        provider,
+        model,
+      }),
+    };
+  }
+
   const hooksGmailThinking = isGmailHook
     ? normalizeThinkLevel(input.cfg.hooks?.gmail?.thinking)
     : undefined;
@@ -848,6 +876,7 @@ async function finalizeCronRun(params: {
     deliveryPayloadHasStructuredContent,
     hasFatalErrorPayload,
     embeddedRunError,
+    pendingPresentationWarningError,
   } = resolveCronPayloadOutcome({
     payloads,
     runLevelError: finalRunResult.meta?.error,
@@ -874,6 +903,12 @@ async function finalizeCronRun(params: {
       delivery: result?.delivery,
       ...telemetry,
     });
+  const failPendingPresentationWarningUnlessDelivered = (delivered?: boolean) => {
+    if (pendingPresentationWarningError && delivered !== true) {
+      hasFatalErrorPayload = true;
+      embeddedRunError = pendingPresentationWarningError;
+    }
+  };
 
   const skipHeartbeatDelivery =
     prepared.deliveryRequested &&
@@ -944,6 +979,9 @@ async function finalizeCronRun(params: {
         deliveryResult.result.deliveryAttempted ?? deliveryResult.deliveryAttempted,
       delivery: deliveryTrace,
     };
+    failPendingPresentationWarningUnlessDelivered(
+      resultWithDeliveryMeta.delivered ?? deliveryResult.delivered,
+    );
     if (!hasFatalErrorPayload || deliveryResult.result.status !== "ok") {
       return resultWithDeliveryMeta;
     }
@@ -955,6 +993,7 @@ async function finalizeCronRun(params: {
   }
   summary = deliveryResult.summary;
   outputText = deliveryResult.outputText;
+  failPendingPresentationWarningUnlessDelivered(deliveryResult.delivered);
   return resolveRunOutcome({
     delivered: deliveryResult.delivered,
     deliveryAttempted: deliveryResult.deliveryAttempted,

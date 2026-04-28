@@ -1,5 +1,5 @@
 import { listChannelPlugins } from "../channels/plugins/index.js";
-import { GATEWAY_EVENT_UPDATE_AVAILABLE } from "./events.js";
+import { GATEWAY_EVENT_CONFIG_CHANGED, GATEWAY_EVENT_UPDATE_AVAILABLE } from "./events.js";
 
 const BASE_METHODS = [
   "health",
@@ -45,12 +45,17 @@ const BASE_METHODS = [
   "plugin.approval.request",
   "plugin.approval.waitDecision",
   "plugin.approval.resolve",
+  "plugins.uiDescriptors",
   "wizard.start",
   "wizard.next",
   "wizard.cancel",
   "wizard.status",
   "talk.config",
   "talk.realtime.session",
+  "talk.realtime.relayAudio",
+  "talk.realtime.relayMark",
+  "talk.realtime.relayStop",
+  "talk.realtime.relayToolResult",
   "talk.speak",
   "talk.mode",
   "commands.list",
@@ -71,6 +76,7 @@ const BASE_METHODS = [
   "skills.bins",
   "skills.install",
   "skills.update",
+  "update.status",
   "update.run",
   "voicewake.get",
   "voicewake.set",
@@ -92,6 +98,7 @@ const BASE_METHODS = [
   "sessions.send",
   "sessions.abort",
   "sessions.patch",
+  "sessions.pluginPatch",
   "sessions.reset",
   "sessions.delete",
   "sessions.compact",
@@ -102,6 +109,7 @@ const BASE_METHODS = [
   "node.pair.list",
   "node.pair.approve",
   "node.pair.reject",
+  "node.pair.remove",
   "node.pair.verify",
   "device.pair.list",
   "device.pair.approve",
@@ -172,4 +180,5 @@ export const GATEWAY_EVENTS = [
   "plugin.approval.requested",
   "plugin.approval.resolved",
   GATEWAY_EVENT_UPDATE_AVAILABLE,
+  GATEWAY_EVENT_CONFIG_CHANGED,
 ];
